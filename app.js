@@ -74,6 +74,10 @@ app.use('/api/vhi', vhiRoutes);
 app.get('/', (req, res) => {
   res.send('Backend is running');
 });
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'Backend is running' });
+});
+
 
 // Start server on specified port and bind on all interfaces
 const PORT = process.env.PORT || 3000;
