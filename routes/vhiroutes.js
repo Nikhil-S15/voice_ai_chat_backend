@@ -1,11 +1,14 @@
-const express = require("express");
+const express = require('express');
 const router = express.Router();
-const { submitVHI, getVHIHistory } = require("../controllers/vhiController");
+const vhiController = require('../controllers/vhiController');
 
-// Submit new VHI assessment
-router.post("/", submitVHI);
+// Submit VHI assessment
+router.post('/submit', vhiController.submitVHI);
 
-// Get user's VHI history
-router.get("/history/:userId", getVHIHistory);
+// Get VHI history for a user
+router.get('/history/:userId', vhiController.getVHIHistory);
+
+// Get VHI questions in specified language
+router.get('/questions/:language', vhiController.getVHIQuestions);
 
 module.exports = router;

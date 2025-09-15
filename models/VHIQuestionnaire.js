@@ -1,73 +1,95 @@
+// models/vhi.js
 module.exports = (sequelize, DataTypes) => {
   const VHI = sequelize.define('VHI', {
     id: {
       type: DataTypes.INTEGER,
       primaryKey: true,
-      autoIncrement: true
+      autoIncrement: true,
     },
     userId: {
-      type: DataTypes.STRING,
+      type: DataTypes.INTEGER,
       allowNull: false,
       references: {
-        model: 'onboarding',
+        model: 'Onboarding', // Reference the existing Onboarding model's table
         key: 'userId'
       }
     },
     sessionId: {
       type: DataTypes.STRING,
-      allowNull: false
+      allowNull: false,
     },
-    // Functional subscale (questions 1-10)
     functionalScores: {
-      type: DataTypes.JSONB,
-      allowNull: false
+      type: DataTypes.JSONB, // Use JSONB for PostgreSQL, JSON for other DBs
+      allowNull: false,
     },
-    // Physical subscale (questions 11-20)
     physicalScores: {
       type: DataTypes.JSONB,
-      allowNull: false
+      allowNull: false,
     },
-    // Emotional subscale (questions 21-30)
     emotionalScores: {
       type: DataTypes.JSONB,
-      allowNull: false
+      allowNull: false,
     },
     totalScore: {
       type: DataTypes.INTEGER,
-      allowNull: false
+      allowNull: false,
     },
     functionalSubscore: {
       type: DataTypes.INTEGER,
-      allowNull: false
+      allowNull: false,
     },
     physicalSubscore: {
       type: DataTypes.INTEGER,
-      allowNull: false
+      allowNull: false,
     },
     emotionalSubscore: {
       type: DataTypes.INTEGER,
-      allowNull: false
+      allowNull: false,
+    },
+    language: {
+      type: DataTypes.STRING,
+      allowNull: false,
+      defaultValue: 'english',
+      validate: {
+        isIn: [['english', 'malayalam']]
+      }
+    },
+    durationMinutes: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      defaultValue: 0,
     },
     dateCompleted: {
       type: DataTypes.DATE,
       allowNull: false,
-      defaultValue: DataTypes.NOW
+      defaultValue: DataTypes.NOW,
     },
-    durationMinutes: {
-      type: DataTypes.INTEGER,
-      allowNull: true
-    }
   }, {
-    timestamps: true,
-    tableName: 'vhi_assessments'
+    tableName: 'vhi_assessments',
+    timestamps: true, // This adds createdAt and updatedAt
+    indexes: [
+      {
+        fields: ['userId']
+      },
+      {
+        fields: ['sessionId']
+      },
+      {
+        fields: ['dateCompleted']
+      }
+    ]
   });
 
+
+  // Define associations
   VHI.associate = function(models) {
-    VHI.belongsTo(models.Onboarding, { 
-      foreignKey: 'userId', 
-      targetKey: 'userId' 
+    // Associate VHI with Onboarding via userId foreign key
+    VHI.belongsTo(models.Onboarding, {
+      foreignKey: 'userId',
+      as: 'user'
     });
   };
+
 
   return VHI;
 };

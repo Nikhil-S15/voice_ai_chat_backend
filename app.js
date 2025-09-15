@@ -57,6 +57,7 @@ const voiceRecordingRoutes = require('./routes/voiceRecordingRoutes');
 const grbasRoutes = require('./routes/grbasRoutes');
 const sessionProgressRoutes = require('./routes/sessionProgressRoutes');
 const vhiRoutes = require('./routes/vhiroutes');
+const adminRoutes = require('./routes/admin');
 
 // Register API routes
 app.use('/api/onboarding', onboardingRoutes);
@@ -69,6 +70,8 @@ app.use('/api/voice-recordings', voiceRecordingRoutes);
 app.use('/api/grbas', grbasRoutes);
 app.use('/api/session-progress', sessionProgressRoutes);
 app.use('/api/vhi', vhiRoutes);
+app.use('/api/admin', adminRoutes);
+
 
 // Optional: Add a simple route at root for health checks
 app.get('/', (req, res) => {
