@@ -1,23 +1,40 @@
+
+
 {
   "development": {
-    "username": "your_local_pg_user",
-    "password": "your_local_pg_password",
-    "database": "your_local_db_name",
+    "username": "postgres",
+    "password": "nikhil",
+    "database": "voice_db",
     "host": "127.0.0.1",
-    "dialect": "postgres"
+    "port": 5432,
+    "dialect": "postgres",
+    "dialectOptions": {
+      "ssl": false
+    }
   },
   "test": {
-    "username": "your_local_pg_user",
-    "password": "your_local_pg_password",
-    "database": "your_test_db_name",
+    "username": "postgres",
+    "password": "nikhil",
+    "database": "voice_db_test",
     "host": "127.0.0.1",
-    "dialect": "postgres"
+    "port": 5432,
+    "dialect": "postgres",
+    "dialectOptions": {
+      "ssl": false
+    }
   },
   "production": {
     "username": "voice_ai_db_user",
     "password": "95M3TJ6Ae5SIrgn2vv6cPiC8f0HyynrL",
     "database": "voice_ai_db",
     "host": "dpg-d2klbm15pdvs739ofs50-a",
-    "dialect": "postgres"
+    "port": 5432,
+    "dialect": "postgres",
+    "dialectOptions": {
+      "ssl": {
+        "require": true,
+        "rejectUnauthorized": false
+      }
+    }
   }
 }

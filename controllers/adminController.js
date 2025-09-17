@@ -107,6 +107,8 @@ const getPatientAnalysisData = async (req, res) => {
 
     const analysisData = patients.map(patient => {
       const patientData = patient.toJSON();
+      const sanitizedPatientName = sanitizeFilename(patientData.participantName || `patient_${patientId}`);
+
       
       const timeline = [];
       
@@ -264,6 +266,7 @@ const getPatientAnalysisData = async (req, res) => {
 };
 
 // Get detailed patient profile for doctor review
+// Get detailed patient profile for doctor review
 const getPatientDetailedProfile = async (req, res) => {
   try {
     const { patientId } = req.params;
@@ -324,11 +327,35 @@ const getPatientDetailedProfile = async (req, res) => {
     }
     
     const patientData = patient.toJSON();
+    const sanitizedPatientName = sanitizeFilename(patientData.participantName || `patient_${patientId}`);
+
     
+    // Helper function to format assessment data
+    const formatAssessmentData = (assessment) => {
+      if (!assessment) return null;
+      
+      const formatted = {};
+      Object.entries(assessment).forEach(([key, value]) => {
+        // Only include fields that have values
+        if (value !== null && value !== undefined && value !== '') {
+          // Convert boolean values to Yes/No for better readability
+          if (typeof value === 'boolean') {
+            formatted[key] = value ? 'Yes' : 'No';
+          } else if (Array.isArray(value) && value.length > 0) {
+            formatted[key] = value.join(', ');
+          } else {
+            formatted[key] = value;
+          }
+        }
+      });
+      
+      return Object.keys(formatted).length > 0 ? formatted : null;
+    };
+
+    // Enhanced profile with detailed assessment data
     const profile = {
       basicInfo: {
         userId: patientData.userId,
-        // userId: patientData.userId,
         participantName: patientData.participantName,
         age: patientData.age,
         gender: patientData.gender,
@@ -401,12 +428,16 @@ const getPatientDetailedProfile = async (req, res) => {
         completedAt: patientData.Confounder.completedAt
       } : null,
       
+      // Enhanced cancer assessments with detailed data
       cancerAssessments: {
-        oralCancer: patientData.OralCancer,
-        larynxHypopharynx: patientData.LarynxHypopharynx,
-        pharynxCancer: patientData.PharynxCancer
+        oralCancer: formatAssessmentData(patientData.OralCancer),
+        
+        larynxHypopharynx: formatAssessmentData(patientData.LarynxHypopharynx),
+        
+        pharynxCancer: formatAssessmentData(patientData.PharynxCancer)
       },
       
+      // Enhanced VHI with detailed scores
       voiceHandicapIndex: patientData.VHI ? {
         scores: {
           functional: patientData.VHI.functionalSubscore,
@@ -421,10 +452,13 @@ const getPatientDetailedProfile = async (req, res) => {
           physical: patientData.VHI.physicalScores,
           emotional: patientData.VHI.emotionalScores
         },
-        completedAt: patientData.VHI.dateCompleted
+        dateCompleted: patientData.VHI.dateCompleted,
+        // Include all VHI fields
+        ...formatAssessmentData(patientData.VHI)
       } : null,
       
-      grbasRatings: patientData.GRBASRatings || [],
+      grbasRatings: patientData.GRBASRatings ? 
+        patientData.GRBASRatings.map(rating => formatAssessmentData(rating)) : [],
       
       voiceRecordings: patientData.VoiceRecordings ? 
         patientData.VoiceRecordings.map(recording => ({
@@ -434,10 +468,159 @@ const getPatientDetailedProfile = async (req, res) => {
           duration: recording.durationSeconds,
           filePath: recording.audioFilePath,
           recordingDate: recording.recordingDate,
-          downloadUrl: `/api/admin/recordings/${recording.id}/download`
+          downloadUrl: `/api/admin/recordings/${recording.id}/download`,
+          // Include all recording fields
+          ...recording
         })) : []
     };
     
+    // Enhanced completeness calculation
+    const calculateCompletenessPercentage = (profile) => {
+      let completed = 0;
+      let total = 7; // All assessment types
+      
+      if (profile.basicInfo && profile.basicInfo.participantName) completed++;
+      if (profile.demographics) completed++;
+      if (profile.healthHistory) completed++;
+      if (profile.cancerAssessments?.oralCancer) completed++;
+      if (profile.cancerAssessments?.larynxHypopharynx) completed++;
+      if (profile.cancerAssessments?.pharynxCancer) completed++;
+      if (profile.voiceHandicapIndex) completed++;
+      if (profile.voiceRecordings && profile.voiceRecordings.length > 0) completed++;
+      
+      return Math.round((completed / total) * 100);
+    };
+
+    // Enhanced risk factor identification
+    const identifyRiskFactors = (profile) => {
+      const riskFactors = [];
+      
+      if (profile.healthHistory) {
+        if (profile.healthHistory.tobaccoUse?.status === 'Yes' || 
+            profile.healthHistory.tobaccoUse?.currentStatus === 'Current') {
+          riskFactors.push({
+            type: 'Tobacco Use',
+            severity: 'High',
+            details: profile.healthHistory.tobaccoUse
+          });
+        }
+        
+        if (profile.healthHistory.alcoholUse?.status === 'Yes') {
+          riskFactors.push({
+            type: 'Alcohol Use',
+            severity: 'Moderate',
+            details: profile.healthHistory.alcoholUse
+          });
+        }
+        
+        if (profile.healthHistory.voiceUse?.professionalUse === 'Professional') {
+          riskFactors.push({
+            type: 'Professional Voice Use',
+            severity: 'Low',
+            details: profile.healthHistory.voiceUse
+          });
+        }
+      }
+      
+      // Add cancer-related risk factors
+      if (profile.cancerAssessments?.oralCancer || 
+          profile.cancerAssessments?.larynxHypopharynx || 
+          profile.cancerAssessments?.pharynxCancer) {
+        riskFactors.push({
+          type: 'Cancer History',
+          severity: 'High',
+          details: 'Patient has completed cancer assessment(s)'
+        });
+      }
+      
+      return riskFactors;
+    };
+
+    // Enhanced voice concerns analysis
+    const analyzeVoiceConcerns = (profile) => {
+      const concerns = [];
+      
+      if (profile.voiceHandicapIndex) {
+        const vhi = profile.voiceHandicapIndex;
+        if (vhi.scores.total > 60) {
+          concerns.push({
+            type: 'Severe Voice Handicap',
+            score: vhi.scores.total,
+            priority: 'High'
+          });
+        } else if (vhi.scores.total > 30) {
+          concerns.push({
+            type: 'Moderate Voice Handicap',
+            score: vhi.scores.total,
+            priority: 'Medium'
+          });
+        }
+      }
+      
+      if (profile.voiceRecordings && profile.voiceRecordings.length > 0) {
+        const totalDuration = profile.voiceRecordings.reduce((sum, rec) => sum + rec.duration, 0);
+        if (totalDuration < 60000) {
+          concerns.push({
+            type: 'Limited Voice Sample',
+            details: 'Insufficient recording duration for comprehensive analysis',
+            priority: 'Medium'
+          });
+        }
+      } else {
+        concerns.push({
+          type: 'No Voice Recordings',
+          details: 'No voice samples available for analysis',
+          priority: 'High'
+        });
+      }
+      
+      return concerns;
+    };
+
+    // Enhanced recommendations generation
+    const generateRecommendations = (profile) => {
+      const recommendations = [];
+      
+      const completeness = calculateCompletenessPercentage(profile);
+      if (completeness < 80) {
+        recommendations.push({
+          type: 'Complete Assessment',
+          priority: 'High',
+          description: 'Patient assessment is incomplete. Follow up to gather missing information.'
+        });
+      }
+      
+      if (profile.voiceHandicapIndex && profile.voiceHandicapIndex.scores.total > 30) {
+        recommendations.push({
+          type: 'Voice Therapy Evaluation',
+          priority: 'High',
+          description: 'Consider referral to speech-language pathologist for voice therapy evaluation.'
+        });
+      }
+      
+      const riskFactors = identifyRiskFactors(profile);
+      if (riskFactors.some(rf => rf.severity === 'High')) {
+        recommendations.push({
+          type: 'Risk Factor Management',
+          priority: 'High',
+          description: 'Address high-risk factors (tobacco/alcohol use) as part of treatment plan.'
+        });
+      }
+      
+      // Add recommendations based on cancer assessments
+      if (profile.cancerAssessments?.oralCancer || 
+          profile.cancerAssessments?.larynxHypopharynx || 
+          profile.cancerAssessments?.pharynxCancer) {
+        recommendations.push({
+          type: 'Oncology Consultation',
+          priority: 'High',
+          description: 'Refer to oncology specialist for comprehensive cancer care evaluation.'
+        });
+      }
+      
+      return recommendations;
+    };
+
     res.json({
       success: true,
       data: profile,
@@ -456,6 +639,13 @@ const getPatientDetailedProfile = async (req, res) => {
       message: `Failed to fetch patient profile: ${error.message}` 
     });
   }
+};
+const sanitizeFilename = (filename) => {
+  if (!filename) return 'patient';
+  return filename
+    .replace(/[^a-zA-Z0-9._-]/g, '_') // Replace special characters with underscores
+    .replace(/\s+/g, '_') // Replace spaces with underscores
+    .substring(0, 50); // Limit filename length
 };
 
 // Export individual patient data with recordings
@@ -497,9 +687,12 @@ const exportPatientData = async (req, res) => {
     console.log('✅ [BACKEND] Patient found:', patient.participantName);
     
     const patientData = patient.toJSON();
+    const sanitizedPatientName = sanitizeFilename(patientData.participantName || `patient_${patientId}`);
+
     
     const tempDir = path.join(process.cwd(), 'temp', `patient_${patientId}_${Date.now()}`);
     await fs.promises.mkdir(tempDir, { recursive: true });
+    
     
     try {
       const comprehensiveRecord = {
@@ -603,19 +796,59 @@ const exportPatientData = async (req, res) => {
         exported_by: 'Admin System'
       };
       
-      const csvData = [comprehensiveRecord];
+     const csvData = [comprehensiveRecord];
       const csv = json2csv(csvData, {
         fields: Object.keys(comprehensiveRecord),
         withBOM: true,
         excelStrings: true
       });
       
-      const csvFilePath = path.join(tempDir, `${patientData.participantName || 'patient'}_complete_data.csv`);
+      const csvFilePath = path.join(tempDir, `${sanitizedPatientName}_complete_data.csv`);
       await fs.promises.writeFile(csvFilePath, csv);
+
+      // Generate PDF with proper async/await and error handling
+      const pdfFilePath = path.join(tempDir, `${sanitizedPatientName}_detailed_report.pdf`);
+      let pdfGenerated = false;
       
-      const pdfFilePath = path.join(tempDir, `${patientData.participantName || 'patient'}_detailed_report.pdf`);
-      await generatePatientPDFReport(patientData, pdfFilePath);
+      try {
+        console.log('🔄 Generating PDF report...');
+        await generatePatientPDFReport(patientData, pdfFilePath);
+        
+        // Verify PDF file exists and has content
+        if (fs.existsSync(pdfFilePath)) {
+          const stats = await fs.promises.stat(pdfFilePath);
+          if (stats.size > 0) {
+            pdfGenerated = true;
+            console.log('✅ PDF report generated successfully, size:', stats.size, 'bytes');
+          } else {
+            console.log('⚠️ PDF file exists but is empty');
+            pdfGenerated = false;
+          }
+        } else {
+          console.log('⚠️ PDF file was not created');
+          pdfGenerated = false;
+        }
+      } catch (pdfError) {
+        console.error('❌ PDF generation error:', pdfError);
+        try {
+          console.log('🔄 Creating fallback PDF...');
+          await createFallbackPDF(patientData, pdfFilePath);
+          
+          // Verify fallback PDF
+          if (fs.existsSync(pdfFilePath)) {
+            const stats = await fs.promises.stat(pdfFilePath);
+            if (stats.size > 0) {
+              pdfGenerated = true;
+              console.log('✅ Fallback PDF created successfully, size:', stats.size, 'bytes');
+            }
+          }
+        } catch (fallbackError) {
+          console.error('❌ Fallback PDF also failed:', fallbackError);
+          pdfGenerated = false;
+        }
+      }
       
+      // Process audio files
       const audioFiles = [];
       if (includeAudio && patientData.VoiceRecordings) {
         const audioDir = path.join(tempDir, 'voice_recordings');
@@ -623,7 +856,7 @@ const exportPatientData = async (req, res) => {
         
         for (const recording of patientData.VoiceRecordings) {
           if (recording.audioFilePath && fs.existsSync(recording.audioFilePath)) {
-            const baseFileName = `${patientData.participantName || 'patient'}_${recording.taskType.replace(/\s+/g, '_')}_${new Date(recording.recordingDate || recording.createdAt).toISOString().split('T')[0]}`;
+            const baseFileName = `${sanitizedPatientName}_${recording.taskType.replace(/\s+/g, '_')}_${new Date(recording.recordingDate || recording.createdAt).toISOString().split('T')[0]}`;
             
             if (audioFormat === 'wav') {
               const wavFilePath = path.join(audioDir, `${baseFileName}.wav`);
@@ -650,6 +883,7 @@ const exportPatientData = async (req, res) => {
           }
         }
         
+        // Create audio manifest
         if (audioFiles.length > 0) {
           const audioManifest = {
             patientInfo: {
@@ -673,90 +907,249 @@ const exportPatientData = async (req, res) => {
         }
       }
       
+      // Handle different export formats
       if (format === 'csv') {
         res.setHeader('Content-Type', 'text/csv');
-        res.setHeader('Content-Disposition', `attachment; filename="${patientData.participantName || 'patient'}_data.csv"`);
+        res.setHeader('Content-Disposition', `attachment; filename="${sanitizedPatientName}_data.csv"`);
         res.send(csv);
         return;
       }
       
       if (format === 'pdf') {
-        res.setHeader('Content-Type', 'application/pdf');
-        res.setHeader('Content-Disposition', `attachment; filename="${patientData.participantName || 'patient'}_report.pdf"`);
-        const pdfBuffer = await fs.promises.readFile(pdfFilePath);
-        res.send(pdfBuffer);
+        if (pdfGenerated && fs.existsSync(pdfFilePath)) {
+          res.setHeader('Content-Type', 'application/pdf');
+          res.setHeader('Content-Disposition', `attachment; filename="${sanitizedPatientName}_report.pdf"`);
+          const pdfBuffer = await fs.promises.readFile(pdfFilePath);
+          res.send(pdfBuffer);
+        } else {
+          return res.status(500).json({
+            success: false,
+            message: 'PDF report could not be generated'
+          });
+        }
         return;
       }
       
-      // Create ZIP archive
-      const zipFilePath = path.join(process.cwd(), 'temp', `${patientData.participantName || 'patient'}_complete_export_${Date.now()}.zip`);
+      // Create ZIP archive with proper error handling
+      const zipFilePath = path.join(process.cwd(), 'temp', `${sanitizedPatientName}_complete_export_${Date.now()}.zip`);
       const output = fs.createWriteStream(zipFilePath);
       const archive = archiver('zip', { zlib: { level: 9 } });
-      
+
       return new Promise((resolve, reject) => {
         output.on('close', async () => {
           try {
+            console.log('📦 ZIP file completed, total bytes:', archive.pointer());
             res.setHeader('Content-Type', 'application/zip');
-            res.setHeader('Content-Disposition', `attachment; filename="${patientData.participantName || 'patient'}_complete_export.zip"`);
+            res.setHeader('Content-Disposition', `attachment; filename="${sanitizedPatientName}_complete_export.zip"`);
             
             const zipBuffer = await fs.promises.readFile(zipFilePath);
-            
-            // Clean up
-            await fs.promises.rmdir(tempDir, { recursive: true });
-            await fs.promises.unlink(zipFilePath);
-            
             res.send(zipBuffer);
+            
+            // Clean up after response is sent
+            setTimeout(async () => {
+              try {
+                if (fs.existsSync(tempDir)) {
+                  await fs.promises.rm(tempDir, { recursive: true });
+                }
+                if (fs.existsSync(zipFilePath)) {
+                  await fs.promises.unlink(zipFilePath);
+                }
+                console.log('🧹 Cleanup completed successfully');
+              } catch (cleanupError) {
+                console.error('⚠️ Cleanup error (non-fatal):', cleanupError);
+              }
+            }, 1000); // Give time for response to complete
+            
             resolve();
           } catch (error) {
+            console.error('❌ Error in output close handler:', error);
             reject(error);
           }
         });
         
-        archive.on('error', reject);
+        archive.on('error', (err) => {
+          console.error('❌ Archive error:', err);
+          reject(err);
+        });
+        
+        archive.on('warning', (err) => {
+          if (err.code === 'ENOENT') {
+            console.warn('⚠️ Archive warning:', err);
+          } else {
+            reject(err);
+          }
+        });
+        
         archive.pipe(output);
         
-        // Add CSV file
-        archive.file(csvFilePath, { name: 'patient_complete_data.csv' });
+        // Add CSV file (should always exist)
+        if (fs.existsSync(csvFilePath)) {
+          console.log('📄 Adding CSV to ZIP');
+          archive.file(csvFilePath, { name: 'patient_complete_data.csv' });
+        } else {
+          console.log('⚠️ CSV file not found, skipping');
+        }
         
-        // Add PDF report
-        archive.file(pdfFilePath, { name: 'patient_detailed_report.pdf' });
+        // Add PDF only if it was successfully generated and exists
+        if (pdfGenerated && fs.existsSync(pdfFilePath)) {
+          console.log('📄 Adding PDF to ZIP, file size:', fs.statSync(pdfFilePath).size, 'bytes');
+          archive.file(pdfFilePath, { name: 'patient_detailed_report.pdf' });
+        } else {
+          console.log('⚠️ PDF report not available, skipping from ZIP');
+        }
         
         // Add audio files and manifest
         if (audioFiles.length > 0) {
+          console.log('🎵 Adding audio files to ZIP:', audioFiles.length, 'files');
           audioFiles.forEach(audioFile => {
-            archive.file(audioFile.filePath, { name: `voice_recordings/${audioFile.fileName}` });
+            if (fs.existsSync(audioFile.filePath)) {
+              archive.file(audioFile.filePath, { name: `voice_recordings/${audioFile.fileName}` });
+            } else {
+              console.log('⚠️ Audio file not found:', audioFile.filePath);
+            }
           });
           
-          const manifestPath = path.join(tempDir, 'voice_recordings', 'recording_manifest.json');
+          const manifestPath = path.join(audioDir, 'recording_manifest.json');
           if (fs.existsSync(manifestPath)) {
             archive.file(manifestPath, { name: 'voice_recordings/recording_manifest.json' });
           }
         }
         
         // Add readme file
-        const readmeContent = generatePatientExportReadme(patientData, audioFiles.length > 0);
+        const readmeContent = generatePatientExportReadme(patientData, audioFiles.length > 0, pdfGenerated);
         archive.append(readmeContent, { name: 'README.txt' });
         
+        // Finalize the archive
+        console.log('🔄 Finalizing ZIP archive...');
         archive.finalize();
       });
       
-    } finally {
+    } catch (error) {
+      // Clean up temp directory on error
       try {
         if (fs.existsSync(tempDir)) {
-          await fs.promises.rmdir(tempDir, { recursive: true });
+          await fs.promises.rm(tempDir, { recursive: true, force: true });
         }
       } catch (cleanupError) {
         console.error('Cleanup error:', cleanupError);
       }
+      throw error;
     }
     
   } catch (error) {
-    console.error('Patient export error:', error);
+    console.error('❌ Patient export error:', error);
     res.status(500).json({ 
       success: false, 
       message: `Export failed: ${error.message}` 
     });
   }
+};
+
+// Add this function for fallback PDF generation
+// Update the fallback PDF function
+// Enhanced fallback PDF function
+// Enhanced fallback PDF function with proper error handling
+const createFallbackPDF = async (patientData, outputPath) => {
+  return new Promise((resolve, reject) => {
+    try {
+      console.log('🔄 Creating fallback PDF for:', patientData.userId);
+      
+      const doc = new PDFDocument({ margin: 50 });
+      const stream = fs.createWriteStream(outputPath);
+      
+      // Handle stream events
+      stream.on('finish', () => {
+        console.log('✅ Fallback PDF stream finished');
+        
+        // Verify the file was created
+        setTimeout(() => {
+          if (fs.existsSync(outputPath)) {
+            const stats = fs.statSync(outputPath);
+            if (stats.size > 0) {
+              console.log('✅ Fallback PDF verified, size:', stats.size, 'bytes');
+              resolve(outputPath);
+            } else {
+              reject(new Error('Fallback PDF file is empty'));
+            }
+          } else {
+            reject(new Error('Fallback PDF file was not created'));
+          }
+        }, 100);
+      });
+      
+      stream.on('error', (error) => {
+        console.error('❌ Fallback PDF stream error:', error);
+        reject(error);
+      });
+      
+      doc.pipe(stream);
+      
+      try {
+        // Simple header
+        doc.fontSize(20).text('Patient Data Export - Basic Report', { align: 'center' });
+        doc.moveDown();
+        doc.fontSize(12).text(`Generated on: ${new Date().toLocaleDateString()}`, { align: 'center' });
+        doc.moveDown(2);
+        
+        // Basic patient info
+        doc.fontSize(16).text('Patient Information', { underline: true });
+        doc.moveDown();
+        doc.fontSize(12);
+        doc.text(`Patient ID: ${patientData.userId || 'N/A'}`);
+        doc.text(`Name: ${patientData.participantName || 'N/A'}`);
+        doc.text(`Age: ${patientData.age || 'N/A'}`);
+        doc.text(`Gender: ${patientData.gender || 'N/A'}`);
+        doc.text(`Registration Date: ${new Date(patientData.createdAt).toLocaleDateString()}`);
+        doc.moveDown();
+        
+        // Assessment summary
+        doc.fontSize(16).text('Assessment Summary', { underline: true });
+        doc.moveDown();
+        doc.fontSize(12);
+        doc.text(`Demographics Completed: ${patientData.Demographics ? 'Yes' : 'No'}`);
+        doc.text(`Health History Completed: ${patientData.Confounder ? 'Yes' : 'No'}`);
+        doc.text(`VHI Assessment Completed: ${patientData.VHI ? 'Yes' : 'No'}`);
+        doc.text(`Voice Recordings Available: ${patientData.VoiceRecordings?.length > 0 ? 'Yes (' + patientData.VoiceRecordings.length + ')' : 'No'}`);
+        doc.moveDown();
+        
+        // Key findings (if available)
+        if (patientData.VHI) {
+          doc.fontSize(16).text('Key Findings', { underline: true });
+          doc.moveDown();
+          doc.fontSize(12);
+          doc.text(`VHI Total Score: ${patientData.VHI.totalScore}`);
+          const severity = patientData.VHI.totalScore <= 30 ? 'Mild' : 
+                          patientData.VHI.totalScore <= 60 ? 'Moderate' : 'Severe';
+          doc.text(`Voice Handicap Severity: ${severity}`);
+          doc.moveDown();
+        }
+        
+        doc.fontSize(14).text('Export Summary:', { underline: true });
+        doc.fontSize(12);
+        doc.text('• Complete patient data available in CSV file');
+        doc.text('• Voice recordings included (if available)');
+        doc.text('• Detailed PDF report could not be generated');
+        doc.text('• Please use CSV file for comprehensive analysis');
+        doc.moveDown();
+        
+        doc.fontSize(12).text('For detailed analysis, please refer to the CSV file included in this export.', {
+          align: 'center',
+          italic: true
+        });
+        
+        doc.end();
+        
+      } catch (contentError) {
+        console.error('❌ Error creating fallback PDF content:', contentError);
+        doc.end();
+        reject(contentError);
+      }
+      
+    } catch (error) {
+      console.error('❌ Fallback PDF setup error:', error);
+      reject(error);
+    }
+  });
 };
 
 // Download recording in WAV format
@@ -1042,7 +1435,7 @@ const exportComprehensiveData = async (req, res) => {
               const zipBuffer = await fs.promises.readFile(zipFilePath);
               
               // Clean up
-              await fs.promises.rmdir(tempDir, { recursive: true });
+              await fs.promises.rm(tempDir, { recursive: true, force: true });
               await fs.promises.unlink(zipFilePath);
               
               res.send(zipBuffer);
@@ -1087,7 +1480,7 @@ const exportComprehensiveData = async (req, res) => {
 
     } finally {
       try {
-        await fs.promises.rmdir(tempDir, { recursive: true });
+        await fs.promises.rm(tempDir, { recursive: true, force: true });
       } catch (cleanupError) {
         console.error('Cleanup error:', cleanupError);
       }
@@ -1696,110 +2089,207 @@ const convertToWav = async (inputPath, outputPath, sampleRate = 44100) => {
 };
 
 // Generate patient PDF report
+// Update the PDF generation function to remove the unused parameter
+// Generate patient PDF report with proper async handling
 const generatePatientPDFReport = async (patientData, outputPath) => {
   return new Promise((resolve, reject) => {
     try {
+      console.log('🔄 Starting PDF generation for:', patientData.userId);
+      
       const doc = new PDFDocument({ margin: 50 });
       const stream = fs.createWriteStream(outputPath);
       
+      // Handle stream events properly
+      stream.on('finish', () => {
+        console.log('✅ PDF stream finished, checking file...');
+        
+        // Verify the file was created and has content
+        setTimeout(() => {
+          if (fs.existsSync(outputPath)) {
+            const stats = fs.statSync(outputPath);
+            if (stats.size > 0) {
+              console.log('✅ PDF file verified, size:', stats.size, 'bytes');
+              resolve(outputPath);
+            } else {
+              console.error('❌ PDF file is empty');
+              reject(new Error('PDF file is empty'));
+            }
+          } else {
+            console.error('❌ PDF file does not exist');
+            reject(new Error('PDF file was not created'));
+          }
+        }, 100); // Small delay to ensure file is fully written
+      });
+      
+      stream.on('error', (error) => {
+        console.error('❌ PDF stream error:', error);
+        reject(error);
+      });
+      
+      // Pipe the document to the stream
       doc.pipe(stream);
       
-      // Header
-      doc.fontSize(20).text('Comprehensive Patient Report', { align: 'center' });
-      doc.moveDown();
-      doc.fontSize(12).text(`Generated on: ${new Date().toLocaleDateString()}`, { align: 'center' });
-      doc.moveDown(2);
-      
-      // Patient Information
-      doc.fontSize(16).text('Patient Information', { underline: true });
-      doc.moveDown();
-      doc.fontSize(12);
-      doc.text(`Name: ${patientData.participantName || 'N/A'}`);
-      doc.text(`ID: ${patientData.userId || patientData.userId || 'N/A'}`);
-      doc.text(`Age: ${patientData.age || 'N/A'}`);
-      doc.text(`Gender: ${patientData.gender || 'N/A'}`);
-      doc.text(`Contact: ${patientData.contactNumber || 'N/A'}`);
-      doc.text(`Email: ${patientData.email || 'N/A'}`);
-      doc.text(`Registration Date: ${new Date(patientData.createdAt).toLocaleDateString()}`);
-      doc.moveDown();
-      
-      // Demographics
-      if (patientData.Demographics) {
-        doc.fontSize(16).text('Demographics', { underline: true });
+      // Generate PDF content
+      try {
+        // Header
+        doc.fontSize(20).text('Comprehensive Patient Report', { align: 'center' });
         doc.moveDown();
-        doc.fontSize(12);
-        doc.text(`Education: ${patientData.Demographics.education || 'N/A'}`);
-        doc.text(`Occupation: ${patientData.Demographics.occupation || 'N/A'}`);
-        doc.text(`Employment: ${patientData.Demographics.employment || 'N/A'}`);
-        doc.text(`Income: ${patientData.Demographics.income || 'N/A'}`);
-        doc.text(`Marital Status: ${patientData.Demographics.maritalStatus || 'N/A'}`);
-        doc.text(`Location: ${patientData.Demographics.city || 'N/A'}, ${patientData.Demographics.state || 'N/A'}`);
-        doc.moveDown();
-      }
-      
-      // Health History
-      if (patientData.Confounder) {
-        doc.fontSize(16).text('Health History', { underline: true });
-        doc.moveDown();
-        doc.fontSize(12);
-        doc.text(`Tobacco Use: ${patientData.Confounder.tobaccoUse || 'N/A'}`);
-        doc.text(`Alcohol Use: ${patientData.Confounder.alcoholUse || 'N/A'}`);
-        doc.text(`Professional Voice Use: ${patientData.Confounder.voiceUse || 'N/A'}`);
-        doc.text(`Voice Hours per Day: ${patientData.Confounder.voiceHours || 'N/A'}`);
-        doc.moveDown();
-      }
-      
-      // Voice Handicap Index
-      if (patientData.VHI) {
-        doc.fontSize(16).text('Voice Handicap Index (VHI-30)', { underline: true });
-        doc.moveDown();
-        doc.fontSize(12);
-        doc.text(`Total Score: ${patientData.VHI.totalScore || 'N/A'}`);
-        doc.text(`Functional Score: ${patientData.VHI.functionalSubscore || 'N/A'}`);
-        doc.text(`Physical Score: ${patientData.VHI.physicalSubscore || 'N/A'}`);
-        doc.text(`Emotional Score: ${patientData.VHI.emotionalSubscore || 'N/A'}`);
-        const severity = patientData.VHI.totalScore ? 
-          (patientData.VHI.totalScore <= 30 ? 'Mild' : 
-           patientData.VHI.totalScore <= 60 ? 'Moderate' : 'Severe') : 'N/A';
-        doc.text(`Severity: ${severity}`);
-        doc.moveDown();
-      }
-      
-      // Voice Recordings
-      if (patientData.VoiceRecordings && patientData.VoiceRecordings.length > 0) {
-        doc.fontSize(16).text('Voice Recordings', { underline: true });
-        doc.moveDown();
-        doc.fontSize(12);
-        doc.text(`Total Recordings: ${patientData.VoiceRecordings.length}`);
+        doc.fontSize(12).text(`Patient ID: ${patientData.userId || 'N/A'}`, { align: 'center' });
+        doc.fontSize(12).text(`Generated on: ${new Date().toLocaleDateString()}`, { align: 'center' });
+        doc.moveDown(2);
         
-        const taskTypes = [...new Set(patientData.VoiceRecordings.map(r => r.taskType))];
-        doc.text(`Task Types: ${taskTypes.join(', ')}`);
-        
-        const totalDuration = patientData.VoiceRecordings.reduce((sum, r) => sum + (r.durationSeconds || 0), 0);
-        doc.text(`Total Duration: ${Math.round(totalDuration / 60)} minutes`);
+        // Patient Information
+        doc.fontSize(16).text('Patient Information', { underline: true });
+        doc.moveDown();
+        doc.fontSize(12);
+        doc.text(`Name: ${patientData.participantName || 'N/A'}`);
+        doc.text(`ID: ${patientData.userId || patientData.userId || 'N/A'}`);
+        doc.text(`Age: ${patientData.age || 'N/A'}`);
+        doc.text(`Gender: ${patientData.gender || 'N/A'}`);
+        doc.text(`Contact: ${patientData.contactNumber || 'N/A'}`);
+        doc.text(`Email: ${patientData.email || 'N/A'}`);
+        doc.text(`Registration Date: ${new Date(patientData.createdAt).toLocaleDateString()}`);
         doc.moveDown();
         
-        doc.fontSize(14).text('Recording Details:', { underline: true });
+        // Demographics
+        if (patientData.Demographics) {
+          doc.fontSize(16).text('Demographics', { underline: true });
+          doc.moveDown();
+          doc.fontSize(12);
+          doc.text(`Education: ${patientData.Demographics.education || 'N/A'}`);
+          doc.text(`Occupation: ${patientData.Demographics.occupation || 'N/A'}`);
+          doc.text(`Employment: ${patientData.Demographics.employment || 'N/A'}`);
+          doc.text(`Income: ${patientData.Demographics.income || 'N/A'}`);
+          doc.text(`Marital Status: ${patientData.Demographics.maritalStatus || 'N/A'}`);
+          doc.text(`Location: ${patientData.Demographics.city || 'N/A'}, ${patientData.Demographics.state || 'N/A'}`);
+          doc.moveDown();
+        }
+        
+        // Health History
+        if (patientData.Confounder) {
+          doc.fontSize(16).text('Health History', { underline: true });
+          doc.moveDown();
+          doc.fontSize(12);
+          doc.text(`Tobacco Use: ${patientData.Confounder.tobaccoUse || 'N/A'}`);
+          doc.text(`Alcohol Use: ${patientData.Confounder.alcoholUse || 'N/A'}`);
+          doc.text(`Professional Voice Use: ${patientData.Confounder.voiceUse || 'N/A'}`);
+          doc.text(`Voice Hours per Day: ${patientData.Confounder.voiceHours || 'N/A'}`);
+          doc.moveDown();
+        }
+        
+        // Voice Handicap Index
+        if (patientData.VHI) {
+          doc.fontSize(16).text('Voice Handicap Index (VHI-30)', { underline: true });
+          doc.moveDown();
+          doc.fontSize(12);
+          doc.text(`Total Score: ${patientData.VHI.totalScore || 'N/A'}`);
+          doc.text(`Functional Score: ${patientData.VHI.functionalSubscore || 'N/A'}`);
+          doc.text(`Physical Score: ${patientData.VHI.physicalSubscore || 'N/A'}`);
+          doc.text(`Emotional Score: ${patientData.VHI.emotionalSubscore || 'N/A'}`);
+          const severity = patientData.VHI.totalScore ? 
+            (patientData.VHI.totalScore <= 30 ? 'Mild' : 
+             patientData.VHI.totalScore <= 60 ? 'Moderate' : 'Severe') : 'N/A';
+          doc.text(`Severity: ${severity}`);
+          doc.moveDown();
+        }
+        
+        // Voice Recordings
+        if (patientData.VoiceRecordings && patientData.VoiceRecordings.length > 0) {
+          doc.fontSize(16).text('Voice Recordings', { underline: true });
+          doc.moveDown();
+          doc.fontSize(12);
+          doc.text(`Total Recordings: ${patientData.VoiceRecordings.length}`);
+          
+          const taskTypes = [...new Set(patientData.VoiceRecordings.map(r => r.taskType))];
+          doc.text(`Task Types: ${taskTypes.join(', ')}`);
+          
+          const totalDuration = patientData.VoiceRecordings.reduce((sum, r) => sum + (r.durationSeconds || 0), 0);
+          doc.text(`Total Duration: ${Math.round(totalDuration / 60)} minutes`);
+          doc.moveDown();
+          
+          doc.fontSize(14).text('Recording Details:', { underline: true });
+          doc.moveDown();
+          patientData.VoiceRecordings.forEach((recording, index) => {
+            doc.fontSize(10);
+            doc.text(`${index + 1}. Task: ${recording.taskType || 'N/A'}, Duration: ${recording.durationSeconds || 0}s, Language: ${recording.language || 'N/A'}`);
+          });
+          doc.moveDown();
+        }
+        
+        // Cancer Assessments
+        let hasCancerData = false;
+        if (patientData.OralCancer || patientData.LarynxHypopharynx || patientData.PharynxCancer) {
+          hasCancerData = true;
+          doc.fontSize(16).text('Cancer Assessments', { underline: true });
+          doc.moveDown();
+          doc.fontSize(12);
+          
+          if (patientData.OralCancer) {
+            doc.text(`Oral Cancer Diagnosis: ${patientData.OralCancer.diagnosisConfirmed || 'N/A'}`);
+            doc.text(`Oral Cancer Treatment: ${patientData.OralCancer.treatmentType || 'N/A'}`);
+          }
+          
+          if (patientData.LarynxHypopharynx) {
+            doc.text(`Larynx Cancer Diagnosis: ${patientData.LarynxHypopharynx.diagnosisConfirmed || 'N/A'}`);
+            doc.text(`Larynx Cancer Treatment: ${patientData.LarynxHypopharynx.treatmentType || 'N/A'}`);
+          }
+          
+          if (patientData.PharynxCancer) {
+            doc.text(`Pharynx Cancer Diagnosis: ${patientData.PharynxCancer.diagnosisConfirmed || 'N/A'}`);
+            doc.text(`Pharynx Cancer Treatment: ${patientData.PharynxCancer.treatmentType || 'N/A'}`);
+          }
+          
+          doc.moveDown();
+        }
+        
+        // GRBAS Ratings
+        if (patientData.GRBASRatings && patientData.GRBASRatings.length > 0) {
+          doc.fontSize(16).text('GRBAS Ratings', { underline: true });
+          doc.moveDown();
+          doc.fontSize(12);
+          doc.text(`Total GRBAS Ratings: ${patientData.GRBASRatings.length}`);
+          doc.moveDown();
+        }
+        
+        // Clinical Notes Section (for doctor to fill)
+        doc.fontSize(16).text('Clinical Notes', { underline: true });
         doc.moveDown();
-        patientData.VoiceRecordings.forEach((recording, index) => {
-          doc.fontSize(10);
-          doc.text(`${index + 1}. Task: ${recording.taskType || 'N/A'}, Duration: ${recording.durationSeconds || 0}s, Language: ${recording.language || 'N/A'}`);
+        doc.fontSize(12);
+        doc.text('Diagnosis: ________________________________');
+        doc.moveDown();
+        doc.text('Treatment Plan: ________________________________');
+        doc.moveDown();
+        doc.text('Follow-up Required: ________________________________');
+        doc.moveDown();
+        doc.text('Priority Level: ________________________________');
+        doc.moveDown();
+        doc.text('Additional Notes: ________________________________');
+        doc.moveDown();
+        
+        // Footer
+        doc.fontSize(10).text('This report was automatically generated. Please verify all information before clinical use.', {
+          align: 'center',
+          italic: true
         });
+        
+        // End the document
+        doc.end();
+        
+      } catch (contentError) {
+        console.error('❌ Error generating PDF content:', contentError);
+        doc.end();
+        reject(contentError);
       }
-      
-      doc.end();
-      
-      stream.on('finish', () => resolve(outputPath));
-      stream.on('error', reject);
       
     } catch (error) {
+      console.error('❌ PDF generation setup error:', error);
       reject(error);
     }
   });
 };
-
 // Generate patient export readme
-const generatePatientExportReadme = (patientData, hasAudioFiles) => {
+// Generate patient export readme
+const generatePatientExportReadme = (patientData, hasAudioFiles, hasPDF = true) => {
   return `COMPREHENSIVE PATIENT DATA EXPORT
 =====================================
 
@@ -1810,7 +2300,7 @@ Export Date: ${new Date().toLocaleDateString()}
 FILES INCLUDED:
 --------------
 1. patient_complete_data.csv - Complete patient data in CSV format for analysis
-2. patient_detailed_report.pdf - Comprehensive PDF report for clinical review
+${hasPDF ? '2. patient_detailed_report.pdf - Comprehensive PDF report for clinical review' : '2. PDF report not available due to generation issues'}
 ${hasAudioFiles ? `3. voice_recordings/ - Folder containing all voice recordings in WAV format
 4. voice_recordings/recording_manifest.json - Metadata for all recordings` : '3. No voice recordings available for this patient'}
 
@@ -1825,13 +2315,13 @@ CSV DATA INCLUDES:
 • Assessment completion status for all modules
 • Clinical notes fields for doctor annotations
 
-PDF REPORT INCLUDES:
+${hasPDF ? `PDF REPORT INCLUDES:
 -------------------
 • Patient summary and key information
 • Risk factor analysis
 • Voice assessment results
 • Clinical recommendations
-• Assessment completion summary
+• Assessment completion summary` : 'PDF REPORT: Not available due to technical issues during generation'}
 
 ${hasAudioFiles ? `VOICE RECORDINGS:
 ----------------
@@ -1875,6 +2365,126 @@ const getPatientVoiceRecordings = async (req, res) => {
     });
   }
 };
+// Enhanced error handling middleware for file operations
+const fileOperationErrorHandler = (err, req, res, next) => {
+  console.error('File operation error:', err);
+  
+  if (err.code === 'ENOENT') {
+    return res.status(404).json({
+      success: false,
+      message: 'File not found',
+      error: 'The requested file could not be located'
+    });
+  }
+  
+  if (err.code === 'EACCES') {
+    return res.status(403).json({
+      success: false,
+      message: 'Access denied',
+      error: 'Permission denied to access the file'
+    });
+  }
+  
+  if (err.code === 'EMFILE' || err.code === 'ENFILE') {
+    return res.status(503).json({
+      success: false,
+      message: 'Server temporarily unavailable',
+      error: 'Too many open files, please try again later'
+    });
+  }
+  
+  if (err.message && err.message.includes('PDF')) {
+    return res.status(500).json({
+      success: false,
+      message: 'PDF generation failed',
+      error: 'Unable to generate PDF report. CSV export is available as alternative.'
+    });
+  }
+  
+  // Generic error
+  res.status(500).json({
+    success: false,
+    message: 'Internal server error',
+    error: err.message || 'An unexpected error occurred'
+  });
+};
+
+// Utility function to ensure directory exists with proper error handling
+const ensureDirectoryExists = async (dirPath) => {
+  try {
+    await fs.promises.mkdir(dirPath, { recursive: true });
+    
+    // Verify directory was created and is accessible
+    await fs.promises.access(dirPath, fs.constants.F_OK | fs.constants.W_OK);
+    
+    return true;
+  } catch (error) {
+    console.error('Directory creation/access error:', error);
+    throw new Error(`Failed to create or access directory: ${dirPath}`);
+  }
+};
+
+// Utility function to safely delete files and directories
+const safeCleanup = async (paths) => {
+  const results = [];
+  
+  for (const filePath of Array.isArray(paths) ? paths : [paths]) {
+    try {
+      if (fs.existsSync(filePath)) {
+        const stats = await fs.promises.stat(filePath);
+        
+        if (stats.isDirectory()) {
+          await fs.promises.rm(filePath, { recursive: true, force: true });
+          results.push({ path: filePath, status: 'directory deleted' });
+        } else {
+          await fs.promises.unlink(filePath);
+          results.push({ path: filePath, status: 'file deleted' });
+        }
+      } else {
+        results.push({ path: filePath, status: 'already deleted' });
+      }
+    } catch (error) {
+      console.error(`Cleanup error for ${filePath}:`, error);
+      results.push({ path: filePath, status: 'cleanup failed', error: error.message });
+    }
+  }
+  
+  return results;
+};
+
+// Enhanced file verification utility
+const verifyFileExists = async (filePath, minSize = 0) => {
+  try {
+    if (!fs.existsSync(filePath)) {
+      return { exists: false, error: 'File does not exist' };
+    }
+    
+    const stats = await fs.promises.stat(filePath);
+    
+    if (stats.size < minSize) {
+      return { 
+        exists: true, 
+        valid: false, 
+        error: `File size ${stats.size} is below minimum ${minSize}`,
+        size: stats.size 
+      };
+    }
+    
+    return { 
+      exists: true, 
+      valid: true, 
+      size: stats.size,
+      modified: stats.mtime 
+    };
+  } catch (error) {
+    return { 
+      exists: false, 
+      error: `File verification failed: ${error.message}` 
+    };
+  }
+};
+
+
 
 module.exports = {
   adminLogin,
@@ -1893,5 +2503,9 @@ module.exports = {
   updatePatientInfo,
   deletePatient,
   exportData,
-  getPatientVoiceRecordings
+  getPatientVoiceRecordings,
+  fileOperationErrorHandler,
+  ensureDirectoryExists,
+  safeCleanup,
+  verifyFileExists
 };
