@@ -1165,14 +1165,67 @@ const downloadRecordingWav = async (req, res) => {
     });
     
     if (!recording) {
-      return res.status(404).json({ success: false, message: 'Recording not found' });
+      console.log('❌ Recording not found:', recordingId);
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Recording not found' 
+      });
+    }
+
+    console.log('✅ Recording found:', recording.audioFilePath);
+    
+    if (!recording.audioFilePath) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Audio file path not found' 
+      });
+    }
+
+    // Fix: Handle relative paths correctly
+    let audioFilePath = recording.audioFilePath;
+    
+    // If path starts with '/uploads', it's relative to project root
+    if (audioFilePath.startsWith('/uploads')) {
+      audioFilePath = path.join(process.cwd(), audioFilePath.substring(1)); // Remove leading '/'
+    } else if (!path.isAbsolute(audioFilePath)) {
+      // If it's relative, make it relative to project root
+      audioFilePath = path.join(process.cwd(), audioFilePath);
     }
     
-    if (!recording.audioFilePath || !fs.existsSync(recording.audioFilePath)) {
-      return res.status(404).json({ success: false, message: 'Audio file not found' });
+    console.log('🔍 Looking for file at:', audioFilePath);
+    
+    if (!fs.existsSync(audioFilePath)) {
+      console.log('❌ Audio file not found at:', audioFilePath);
+      
+      // Try alternative paths
+      const alternativePaths = [
+        path.join(__dirname, '../uploads/recordings', path.basename(audioFilePath)),
+        path.join(process.cwd(), 'uploads', 'recordings', path.basename(audioFilePath)),
+        path.join(__dirname, '..', recording.audioFilePath)
+      ];
+      
+      let foundPath = null;
+      for (const altPath of alternativePaths) {
+        console.log('🔍 Trying alternative path:', altPath);
+        if (fs.existsSync(altPath)) {
+          foundPath = altPath;
+          break;
+        }
+      }
+      
+      if (!foundPath) {
+        return res.status(404).json({ 
+          success: false, 
+          message: 'Audio file not found in any expected location' 
+        });
+      }
+      
+      audioFilePath = foundPath;
     }
     
-    // Create temporary WAV file
+    console.log('✅ Audio file found at:', audioFilePath);
+    
+    // Create temporary directory for processing
     const tempDir = path.join(process.cwd(), 'temp');
     await fs.promises.mkdir(tempDir, { recursive: true });
     
@@ -1181,7 +1234,7 @@ const downloadRecordingWav = async (req, res) => {
     const outputPath = path.join(tempDir, fileName);
     
     // Convert to WAV
-    await convertToWav(recording.audioFilePath, outputPath, 44100);
+    await convertToWav(audioFilePath, outputPath, 44100);
     
     // Send WAV file
     res.setHeader('Content-Type', 'audio/wav');
@@ -1199,7 +1252,10 @@ const downloadRecordingWav = async (req, res) => {
     
   } catch (error) {
     console.error('WAV download error:', error);
-    res.status(500).json({ success: false, message: `Download failed: ${error.message}` });
+    res.status(500).json({ 
+      success: false, 
+      message: `Download failed: ${error.message}` 
+    });
   }
 };
 
@@ -1612,22 +1668,23 @@ const getVoiceRecordingsAdmin = async (req, res) => {
     if (userId) whereClause.userId = userId;
     if (taskType && taskType !== 'All Tasks') whereClause.taskType = taskType;
 
-    const includeClause = {
-      model: db.Onboarding,
-      attributes: ['participantName', 'userId', 'age', 'gender', 'contactNumber'],
-      ...(patientSearch && {
-        where: {
-          [Op.or]: [
-            { participantName: { [Op.iLike]: `%${patientSearch}%` } },
-            { userId: { [Op.iLike]: `%${patientSearch}%` } }
-          ]
-        }
-      })
-    };
-
+    // Simpler approach: get recordings with basic patient info
     const recordings = await db.VoiceRecording.findAll({
       where: whereClause,
-      include: [includeClause],
+      include: [
+        {
+          model: db.Onboarding,
+          attributes: ['participantName', 'userId'],
+          ...(patientSearch && {
+            where: {
+              [Op.or]: [
+                { participantName: { [Op.iLike]: `%${patientSearch}%` } },
+                { userId: { [Op.iLike]: `%${patientSearch}%` } }
+              ]
+            }
+          })
+        }
+      ],
       order: [[sortBy, sortOrder]],
       attributes: [
         'id',
@@ -1643,6 +1700,7 @@ const getVoiceRecordingsAdmin = async (req, res) => {
       ]
     });
 
+    // Simple grouping without the problematic demographic fields
     const groupedByPatient = recordings.reduce((acc, recording) => {
       const patientId = recording.userId;
       if (!acc[patientId]) {
